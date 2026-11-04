@@ -26,7 +26,7 @@ BASIC_TRANSFORM = v2.Compose([
 def get_ds_full(processed_path: Path = PROCESSED_PATH) -> Dataset:
     """Load the preprocessed dataset from disk, building it on first use."""
     if (processed_path / "dataset_info.json").exists():
-        return load_from_disk(str(processed_path))
+        return load_from_disk(str(processed_path)) # type: ignore
 
     ds = load_dataset(DATASET_NAME, split="train", cache_dir=CACHE_DIR)
     ds = preprocess_pipeline(ds)
