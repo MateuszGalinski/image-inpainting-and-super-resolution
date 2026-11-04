@@ -62,15 +62,35 @@ def get_splits_dataloaders(
     transform_train=BASIC_TRANSFORM,
     transform_val=BASIC_TRANSFORM,
     transform_test=BASIC_TRANSFORM,
+    shuffle_train : bool = True,
     batch_size: int = BATCH_SIZE,
     num_workers: int = 2,
     seed: int = DEFAULT_SEED,
 ):
     ds_train, ds_val, ds_test = get_splits(seed)
-    g = torch.Generator().manual_seed(seed)
+    g = torch.Generator().manual_seed(seed) if shuffle_train else None
 
     return (
-        _make_loader(ds_train, transform_train, batch_size, True, num_workers, g),
+        _make_loader(ds_train, transform_train, batch_size, shuffle_train, num_workers, g),
         _make_loader(ds_val, transform_val, batch_size, False, num_workers),
         _make_loader(ds_test, transform_test, batch_size, False, num_workers),
     )
+
+def get_full_dataloader(
+    transform=BASIC_TRANSFORM,
+    shuffle : bool = False,
+    batch_size: int = BATCH_SIZE,
+    num_workers: int = 2,
+    seed: int = DEFAULT_SEED,
+) -> tuple[Dataset, DataLoader]:
+    """Return (dataset, loader) over all data.
+
+    With shuffle=False (default), batch i corresponds to rows
+    [i*batch_size, ...) of the returned dataset, so embeddings stay aligned
+    with the metadata. With shuffle=True that alignment is lost, so only use
+    it for training, not for encoding.
+    """
+    ds = get_ds_full()
+    g = torch.Generator().manual_seed(seed) if shuffle else None
+    loader = _make_loader(ds, transform, batch_size, shuffle, num_workers, g)
+    return ds, loader
