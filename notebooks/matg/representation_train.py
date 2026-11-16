@@ -55,6 +55,9 @@ class TrainConfig:
 # (model, batch) -> scalar loss tensor
 LossFn = Callable[[nn.Module, dict], torch.Tensor]
 
+# (epoch, train_loss, val_loss) -> None; called by `fit` after every epoch
+EpochCallback = Callable[[int, float, float], None]
+
 
 def reconstruction_loss(model: nn.Module, batch: dict) -> torch.Tensor:
     """Plain autoencoder: MSE between the reconstruction and the input image."""
@@ -220,6 +223,7 @@ def fit(
     val_dl: DataLoader,
     cfg: TrainConfig = TrainConfig(),
     loss_fn: LossFn = reconstruction_loss,
+    on_epoch_end: EpochCallback | None = None,
 ) -> dict[str, list[float]]:
     """
     Train `model` for `cfg.epochs` epochs with Adam.
@@ -228,12 +232,17 @@ def fit(
     validation loss improves, so the file holds the best epoch, not the last.
     The history stored in it only covers epochs up to that point.
 
+    `on_epoch_end` is called after each epoch (and after any checkpoint save),
+    which is the hook for experiment trackers such as MLflow or Comet.
+
     Args:
         model (RepresentationModel): Model to train. Moved to `cfg.device`.
         train_dl (DataLoader): Training batches.
         val_dl (DataLoader): Validation batches.
         cfg (TrainConfig): Hyperparameters and progress-bar setting.
         loss_fn (LossFn): Turns (model, batch) into a scalar loss.
+        on_epoch_end (EpochCallback | None): Called as
+            `on_epoch_end(epoch, train_loss, val_loss)` with a 0-based epoch.
 
     Returns:
         dict[str, list[float]]: Per-epoch mean losses under 'train' and 'val'.
@@ -243,7 +252,7 @@ def fit(
     history: dict[str, list[float]] = {"train": [], "val": []}
     best_val_loss = float("inf")
 
-    for _ in tqdm(range(cfg.epochs), desc="Epochs", disable=not cfg.show_progress):
+    for epoch in tqdm(range(cfg.epochs), desc="Epochs", disable=not cfg.show_progress):
         train_loss, val_loss = run_epoch(model, train_dl, val_dl, loss_fn, optimizer, cfg)
         history["train"].append(train_loss)
         history["val"].append(val_loss)
@@ -251,5 +260,8 @@ def fit(
         if cfg.checkpoint_path is not None and val_loss < best_val_loss:
             best_val_loss = val_loss
             save_checkpoint(model, cfg.checkpoint_path, history)
+
+        if on_epoch_end is not None:
+            on_epoch_end(epoch, train_loss, val_loss)
 
     return history
