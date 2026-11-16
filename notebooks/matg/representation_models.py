@@ -1,8 +1,28 @@
+import torch
 import torch.nn as nn
 
-class ConvAutoencoder(nn.Module):
-    def __init__(self, img_size = 256, latent_dim = 128) -> None:
+class RepresentationModel(nn.Module):
+    """
+    Base class for models that can embed images.
+
+    Stores the constructor kwargs in `init_kwargs` so a checkpoint can rebuild
+    the exact architecture. Kwargs must be plain data (numbers, strings, bools,
+    lists/tuples/dicts of those), because checkpoints are loaded with
+    `weights_only=True`.
+    """
+
+    def __init__(self, **init_kwargs) -> None:
         super().__init__()
+        self.init_kwargs = init_kwargs
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        """Return the embedding of a batch of images, shape (B, D)."""
+        raise NotImplementedError
+
+
+class ConvAutoencoder(RepresentationModel):
+    def __init__(self, img_size = 256, latent_dim = 128) -> None:
+        super().__init__(img_size=img_size, latent_dim=latent_dim)
         final_channels_count = 128
         final_img_size = img_size // 16
         flatten_in_size = final_channels_count * final_img_size * final_img_size 
@@ -35,3 +55,9 @@ class ConvAutoencoder(nn.Module):
         x = self.encode(x)
         x = self.decode(x)
         return x
+
+# Class name -> class. Checkpoints store the name; load_checkpoint looks it up here.
+# Register every new model, one entry per class (sizes/layers go in init kwargs).
+MODEL_REGISTRY: dict[str, type[RepresentationModel]] = {
+    "ConvAutoencoder": ConvAutoencoder,
+}
