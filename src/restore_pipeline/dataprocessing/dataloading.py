@@ -256,8 +256,12 @@ def get_damaged_splits_dataloaders(
     """
     Like `get_splits_dataloaders`, but batches are {'image': damaged, 'target': clean}.
 
+    Each split uses its transform from `cfg` (transform_train / _val / _test)
+    for both image and target; damage is applied after the transform.
+
     Args:
-        cfg (DataConfig): Splits and batching (same splits as the clean loaders).
+        cfg (DataConfig): Splits, batching and per-split transforms (same
+            splits as the clean loaders).
         damage_fn (DamageFn): Damage applied to every damaged sample.
         mix (bool): False -> damaged samples only. True -> every clean image is
             also included as a clean pair (image == target), so the dataset has
@@ -267,19 +271,19 @@ def get_damaged_splits_dataloaders(
     fixed per image, so their losses are comparable across epochs. The mix
     applies to every split, so validation matches the training distribution.
     """
-    def build(ds: Dataset, deterministic: bool, shuffle: bool) -> DataLoader:
+    def build(ds: Dataset, transform: Callable, deterministic: bool, shuffle: bool) -> DataLoader:
         images = ds.select_columns("image")
         damaged = images.with_transform(
-            PairTransform(BASIC_TRANSFORM, damage_fn, damage=True, deterministic=deterministic)
+            PairTransform(transform, damage_fn, damage=True, deterministic=deterministic)
         )
         if mix:
-            clean = images.with_transform(PairTransform(BASIC_TRANSFORM, damage=False))
-            return _loader_from_dataset(ConcatDataset([clean, damaged]), cfg, shuffle) # type: ignore
-        return _loader_from_dataset(damaged, cfg, shuffle) # type: ignore
+            clean = images.with_transform(PairTransform(transform, damage=False))
+            return _loader_from_dataset(ConcatDataset([clean, damaged]), cfg, shuffle)  # type: ignore
+        return _loader_from_dataset(damaged, cfg, shuffle)  # type: ignore
 
     ds_train, ds_val, ds_test = get_splits(cfg)
     return (
-        build(ds_train, deterministic=False, shuffle=cfg.shuffle_train),
-        build(ds_val, deterministic=True, shuffle=False),
-        build(ds_test, deterministic=True, shuffle=False),
+        build(ds_train, cfg.transform_train, deterministic=False, shuffle=cfg.shuffle_train),
+        build(ds_val, cfg.transform_val, deterministic=True, shuffle=False),
+        build(ds_test, cfg.transform_test, deterministic=True, shuffle=False),
     )
