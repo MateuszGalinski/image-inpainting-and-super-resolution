@@ -221,3 +221,5 @@ __marimo__/
 
 # Custom ignores
 /data
+data
+models_weights
