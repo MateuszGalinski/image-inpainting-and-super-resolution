@@ -19,11 +19,14 @@ import torch
 from datasets import Dataset, load_dataset, load_from_disk
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2
+import torch.nn.functional as F
+from torchvision import tv_tensors
+from torchvision.transforms.v2.functional import rgb_to_grayscale
 
 from .preprocessing import preprocess_pipeline, remove_redundant_columns
 
 #
-# CONFIG
+# TRANSFORMS
 #
 
 BASIC_TRANSFORM = v2.Compose([
@@ -31,6 +34,33 @@ BASIC_TRANSFORM = v2.Compose([
     v2.ToDtype(dtype=torch.float32, scale=True),  # uint8 [0, 255] -> float32 [0, 1]
 ])
 
+class SobelEdges(v2.Transform):
+    """
+    RGB image (3, H, W) in [0, 1] -> Sobel edges (2, H, W), as in DeepCluster.
+
+    Channels are horizontal and vertical gradients of the grayscale image.
+    Raw responses lie in [-4, 4] and are rescaled to [0, 1] so a Sigmoid
+    decoder can reconstruct them: 0.5 means no edge.
+    """
+
+    def transform(self, inpt, params):
+        SOBEL_MAX_RESPONSE = 4.0
+        sobel_x = torch.tensor([[-1., 0., 1.],
+                                [-2., 0., 2.],
+                                [-1., 0., 1.]], dtype=inpt.dtype)
+        kernels = torch.stack([sobel_x, sobel_x.T]).unsqueeze(1)                  # (2, 1, 3, 3)
+
+        gray = rgb_to_grayscale(inpt)                                             # (1, H, W)
+        edges = F.conv2d(gray.unsqueeze(0), kernels, padding=1).squeeze(0)        # (2, H, W)
+        return tv_tensors.wrap((edges + SOBEL_MAX_RESPONSE) / (2 * SOBEL_MAX_RESPONSE), like=inpt) # type: ignore
+
+
+SOBEL_TRANSFORM = v2.Compose([*BASIC_TRANSFORM.transforms, SobelEdges()])
+
+
+#
+# CONFIG
+#
 
 @dataclass(frozen=True)
 class DataConfig:
