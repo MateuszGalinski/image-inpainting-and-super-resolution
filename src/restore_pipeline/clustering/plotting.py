@@ -134,3 +134,61 @@ def plot_kmeans_sweep(
         fig.suptitle(title)
     fig.tight_layout()
     return ax_inertia, ax_silhouette
+
+
+def plot_cluster_samples(
+    dataset,
+    labels: np.ndarray,
+    n_per_cluster: int = 8,
+    captions: pd.Series | None = None,
+    seed: int = 42,
+) -> None:
+    """
+    Show random paintings from each cluster: one row per cluster.
+
+    Use it to see what a cluster actually groups (style, subject, brightness,
+    amount of detail...). Rows are sorted by cluster size, largest first.
+
+    Args:
+        dataset: Indexable dataset whose rows have an 'image' (PIL image or
+            (3, H, W) tensor), aligned with `labels` row by row, e.g.
+            `ds_train` from `get_splits` with an unshuffled config.
+        labels (np.ndarray): Cluster label per row of `dataset`. Noise (-1)
+            is shown as its own row.
+        n_per_cluster (int): Images per row. Smaller clusters show all members.
+        captions (pd.Series | None): Optional text under each image, aligned
+            with `labels`, e.g. `meta["style"]`.
+        seed (int): Seed for picking the samples, so reruns show the same images.
+    """
+    rng = np.random.default_rng(seed)
+    clusters, sizes = np.unique(labels, return_counts=True)
+    order = np.argsort(-sizes)
+
+    fig, axes = plt.subplots(
+        len(clusters), n_per_cluster,
+        figsize=(2 * n_per_cluster, 2.3 * len(clusters)),
+        squeeze=False,
+    )
+    for row, cluster_index in enumerate(order):
+        cluster, size = clusters[cluster_index], sizes[cluster_index]
+        members = np.flatnonzero(labels == cluster)
+        picked = rng.choice(members, size=min(n_per_cluster, size), replace=False)
+
+        for col in range(n_per_cluster):
+            ax = axes[row, col]
+            ax.axis("off")
+            if col >= len(picked):
+                continue
+            image = dataset[int(picked[col])]["image"]
+            if hasattr(image, "permute"):                     # tensor (3, H, W) -> (H, W, 3)
+                image = image.permute(1, 2, 0).clamp(0, 1)
+            ax.imshow(image)
+            if captions is not None:
+                ax.set_title(str(captions.iloc[picked[col]])[:20], fontsize=7)
+
+        name = "noise" if cluster == NOISE else f"cluster {cluster}"
+        axes[row, 0].text(-0.1, 0.5, f"{name}\n(n={size})", transform=axes[row, 0].transAxes,
+                          ha="right", va="center", fontsize=9)
+
+    fig.tight_layout()
+    plt.show()
