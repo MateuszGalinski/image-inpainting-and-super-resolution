@@ -3,3 +3,5 @@ models_weights
 
 *.pdf
 *.jpg
+
+/test_photos/

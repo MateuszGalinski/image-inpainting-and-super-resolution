@@ -7,14 +7,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
-from skimage.metrics import peak_signal_noise_ratio, structural_similarity
-from torch import Tensor, nn
+from torch import nn
 from torch.utils.data import DataLoader, SequentialSampler
 from tqdm.auto import tqdm
 
 from .checkpoints import load_model, read_checkpoint, save_csv
 from .data import SuperResolutionDataset, load_partitions, make_loader, read_split_info
 from .inference import upscale_bicubic
+from .metrics import image_metrics
 from .paths import display_path
 from .visualization import (
     plot_benchmark,
@@ -24,45 +24,6 @@ from .visualization import (
     set_plot_style,
     show_predictions,
 )
-
-
-def image_metrics(prediction: Tensor, target: Tensor) -> dict[str, float]:
-    """Oceń jeden obraz CHW w RGB; identyczny obraz ma PSNR równy nieskończoności."""
-
-    if prediction.shape != target.shape or prediction.ndim != 3:
-        raise ValueError("Oczekiwano dwóch obrazów CHW o identycznych wymiarach.")
-
-    if not torch.isfinite(prediction).all() or not torch.isfinite(target).all():
-        raise ValueError("Obrazy zawierają NaN lub nieskończoność.")
-
-    predicted = (
-        prediction.detach()
-        .cpu()
-        .clamp(0, 1)
-        .permute(1, 2, 0)
-        .numpy()
-        .astype(np.float64)
-    )
-    expected = target.detach().cpu().permute(1, 2, 0).numpy().astype(np.float64)
-
-    mse = float(np.mean((predicted - expected) ** 2))
-    psnr = (
-        float(peak_signal_noise_ratio(expected, predicted, data_range=1.0))
-        if mse
-        else float("inf")
-    )
-
-    ssim = structural_similarity(
-        expected,
-        predicted,
-        data_range=1.0,
-        channel_axis=-1,
-        gaussian_weights=True,
-        sigma=1.5,
-        use_sample_covariance=False,
-    )
-
-    return {"MSE": mse, "PSNR": psnr, "SSIM": float(ssim)}
 
 
 def summarize_results(per_image: pd.DataFrame) -> dict[str, dict[str, float]]:
@@ -247,23 +208,53 @@ def save_report_figures(
     device: torch.device,
     preview_indices: list[int],
     case_count: int,
+    model_name: str,
 ) -> None:
     """Zapisz stałe przykłady oraz mocne i słabe przypadki modelu."""
 
-    save_figure(plot_metrics(results), output_path / "metrics.png")
-    save_figure(plot_gains(per_image), output_path / "gains.png")
+    title = (
+        "Porównanie na pełnej walidacji"
+        if output_path.name == "validation"
+        else "Porównanie na pełnym teście"
+    )
+    save_figure(plot_metrics(results, title, model_name), output_path / "metrics.png")
+
+    for metric in ("psnr", "ssim", "mse"):
+        figure = plot_gains(per_image, metric, model_name)
+        save_figure(figure, output_path / f"gains_{metric}.png")
+
     size = min(64, loader.dataset.hr_size)
-    best = per_image.nlargest(case_count, "psnr_gain")["index"].astype(int).tolist()
-    worst = per_image.nsmallest(case_count, "psnr_gain")["index"].astype(int).tolist()
+    best_delta = per_image.nlargest(case_count, "psnr_gain")["index"].tolist()
+    best_score = per_image.nlargest(case_count, "model_psnr")["index"].tolist()
+    worst = per_image.nsmallest(case_count, "psnr_gain")["index"].tolist()
+    psnr_by_index = {
+        row.index: (row.bicubic_psnr, row.model_psnr)
+        for row in per_image[["index", "bicubic_psnr", "model_psnr"]].itertuples(
+            index=False
+        )
+    }
 
     for filename, indices, detail, title in (
         ("previews.png", preview_indices, None, "Stałe przykłady"),
-        ("details.png", preview_indices, size, "Te same fragmenty · krawędzie"),
-        ("best_cases.png", best, size, "Najlepsze przypadki względem bicubic"),
-        ("worst_cases.png", worst, size, "Najsłabsze przypadki względem bicubic"),
+        ("previews_details.png", preview_indices, size, "Te same fragmenty · krawędzie"),
+        (
+            "best_delta_cases.png",
+            best_delta,
+            size,
+            "Największy zysk PSNR względem bicubic",
+        ),
+        ("best_cases_score.png", best_score, size, "Najwyższy PSNR modelu"),
+        ("worst_cases.png", worst, size, "Najmniejszy zysk PSNR względem bicubic"),
     ):
         figure = show_predictions(
-            model, loader.dataset, indices, device, detail_size=detail, title=title
+            model,
+            loader.dataset,
+            indices,
+            device,
+            detail_size=detail,
+            title=title,
+            model_name=model_name,
+            psnr_by_index=psnr_by_index,
         )
         save_figure(figure, output_path / filename)
 
@@ -308,6 +299,7 @@ def evaluate_experiment(
         device,
         preview_indices,
         case_count,
+        model_name=checkpoint["config"]["experiment_name"],
     )
 
     return {

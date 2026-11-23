@@ -102,6 +102,25 @@ def predict_tiles(
 
 
 @torch.inference_mode()
+def predict_tensor(
+    model: nn.Module,
+    lr: Tensor,
+    device: torch.device,
+    tile_size: int | None = None,
+    overlap: int | None = None,
+    show_progress: bool = True,
+) -> Tensor:
+    """Zwróć surową predykcję RGB jako tensor CHW na CPU."""
+
+    model.eval()
+
+    if tile_size is None:
+        return model(lr.unsqueeze(0).to(device, non_blocking=True))[0].cpu()
+
+    return predict_tiles(model, lr, device, tile_size, overlap, show_progress)
+
+
+@torch.inference_mode()
 def predict_image(
     model: nn.Module,
     image: Image.Image,
@@ -110,14 +129,8 @@ def predict_image(
     overlap: int | None = None,
     show_progress: bool = True,
 ) -> Image.Image:
-    """Powiększ RGB, opcjonalnie zmniejszając zapotrzebowanie na pamięć GPU."""
+    """Powiększ zdjęcie i przygotuj wynik do zapisu jako obraz RGB."""
 
-    model.eval()
     lr = TF.to_tensor(image.convert("RGB"))
-
-    if tile_size is None:
-        sr = model(lr.unsqueeze(0).to(device, non_blocking=True))[0].cpu()
-    else:
-        sr = predict_tiles(model, lr, device, tile_size, overlap, show_progress)
-
+    sr = predict_tensor(model, lr, device, tile_size, overlap, show_progress)
     return TF.to_pil_image(sr.clamp(0, 1))

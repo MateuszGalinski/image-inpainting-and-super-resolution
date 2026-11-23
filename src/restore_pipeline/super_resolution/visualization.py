@@ -165,6 +165,7 @@ def plot_metric_panel(
     results: dict[str, dict[str, float]],
     metric: str,
     title: str,
+    model_name: str = "Model",
 ) -> None:
     """Pokaż model i bicubic na wspólnej skali jednej metryki."""
 
@@ -199,7 +200,7 @@ def plot_metric_panel(
             )
 
     axis.set(
-        title=title, ylim=(1.6, -0.6), yticks=[0, 1], yticklabels=["Model", "Bicubic"]
+        title=title, ylim=(1.6, -0.6), yticks=[0, 1], yticklabels=[model_name, "Bicubic"]
     )
     axis.xaxis.set_major_locator(MaxNLocator(nbins=3, min_n_ticks=2))
     style_axis(axis, grid_axis="x")
@@ -208,6 +209,7 @@ def plot_metric_panel(
 def plot_metrics(
     results: dict[str, dict[str, float]],
     title: str = "Porównanie na pełnej walidacji",
+    model_name: str = "Model",
 ) -> Figure:
     """Porównaj metryki o różnych jednostkach na osobnych osiach."""
 
@@ -219,23 +221,27 @@ def plot_metrics(
     )
 
     for axis, (metric, label) in zip(axes, panels):
-        plot_metric_panel(axis, results, metric, label)
+        plot_metric_panel(axis, results, metric, label, model_name)
 
     fig.suptitle(title, x=0.05, ha="left", color=TEXT, fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.88))
     return fig
 
 
-def plot_gains(per_image: pd.DataFrame) -> Figure:
-    """Pokaż, jak często i o ile model poprawia PSNR na pojedynczych obrazach."""
+def plot_gains(
+    per_image: pd.DataFrame, metric: str = "psnr", model_name: str = "Model"
+) -> Figure:
+    """Pokaż rozkład zysków wybranej metryki względem bicubic."""
 
-    gains = per_image["psnr_gain"].to_numpy()
+    gains = per_image[f"{metric}_gain"].to_numpy()
     finite = gains[np.isfinite(gains)]
     win_rate = 100 * float((gains > 0).mean())
+    metric_label = metric.upper()
+    unit = " [dB]" if metric == "psnr" else ""
     fig, axis = plt.subplots(figsize=(9, 3.8))
 
     if finite.size:
-        extent = max(float(np.abs(finite).max()), 0.05)
+        extent = float(np.abs(finite).max()) or 0.05
         counts, edges = np.histogram(finite, bins=np.linspace(-extent, extent, 31))
         axis.bar(
             edges[:-1],
@@ -247,8 +253,8 @@ def plot_gains(per_image: pd.DataFrame) -> Figure:
 
     axis.axvline(0, color=TEXT, linewidth=1)
     axis.set(
-        title=f"Model poprawia PSNR dla {win_rate:.1f}% obrazów",
-        xlabel="Zmiana PSNR względem bicubic [dB] · dodatnia = poprawa",
+        title=f"{model_name} poprawia {metric_label} dla {win_rate:.1f}% obrazów",
+        xlabel=f"Zysk {metric_label} względem bicubic{unit} · dodatni = poprawa",
         ylabel="Liczba obrazów",
     )
     if finite.size != gains.size:
@@ -334,6 +340,9 @@ def show_predictions(
     detail_size: int | None = None,
     detail_mode: str = "edges",
     title: str | None = None,
+    *,
+    model_name: str = "Model",
+    psnr_by_index: dict[int, tuple[float, float]] | None = None,
 ) -> Figure:
     """Porównaj całe obrazy lub identyczne fragmenty bez zmiany skali kolorów."""
 
@@ -359,10 +368,15 @@ def show_predictions(
             axis.imshow(
                 image.permute(1, 2, 0).numpy(), interpolation="nearest", vmin=0, vmax=1
             )
-            if row == 0:
-                axis.set_title(
-                    column_title, color=BLUE if column_title == "Model" else TEXT
-                )
+            label = model_name if column_title == "Model" else column_title
+            color = BLUE if column_title == "Model" else TEXT
+
+            if psnr_by_index is not None and column_title in ("Bicubic", "Model"):
+                bicubic_psnr, model_psnr = psnr_by_index[index]
+                psnr = bicubic_psnr if column_title == "Bicubic" else model_psnr
+                axis.set_title(f"{label} · PSNR {psnr:.2f} dB", color=color)
+            elif row == 0:
+                axis.set_title(label, color=color)
             axis.axis("off")
 
         axes[row, 0].text(
@@ -381,7 +395,10 @@ def show_predictions(
         if detail_size is None
         else f"Ten sam fragment {detail_size}×{detail_size} · {detail_label}"
     )
-    fig.suptitle(title or label, x=0.05, ha="left", fontsize=13, color=TEXT)
+    heading = title or label
+    if detail_size is not None and psnr_by_index is not None:
+        heading += " · PSNR całego obrazu"
+    fig.suptitle(heading, x=0.05, ha="left", fontsize=13, color=TEXT)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     return fig
 
@@ -486,20 +503,32 @@ def plot_inference_time(frame: pd.DataFrame) -> Figure:
     return fig
 
 
-def plot_user_prediction(image: Image.Image, result: Image.Image) -> Figure:
-    """Zestaw zdjęcie użytkownika, bicubic i wynik modelu z wymiarami obrazów."""
+def plot_user_prediction(
+    lr: Image.Image,
+    bicubic: Image.Image,
+    result: Image.Image,
+    bicubic_psnr: float,
+    model_psnr: float,
+    model_name: str = "",
+) -> Figure:
+    """Pokaż wejście LR oraz obie rekonstrukcje z ich wynikami PSNR."""
 
-    bicubic = image.resize(result.size, Image.Resampling.BICUBIC)
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    model_label = f"Model {model_name}".rstrip()
+    panels = (
+        (lr, "Wejście LR", None),
+        (bicubic, "Bicubic", bicubic_psnr),
+        (result, model_label, model_psnr),
+    )
 
-    for axis, picture, label in zip(
-        axes, (image, bicubic, result), ("Wejście", "Bicubic", "Model"), strict=True
-    ):
+    for axis, (picture, label, psnr) in zip(axes, panels, strict=True):
         axis.imshow(picture, interpolation="nearest")
-        axis.set_title(
-            f"{label} · {picture.width}×{picture.height}",
-            color=BLUE if label == "Model" else TEXT,
-        )
+        title = f"{label} · {picture.width}×{picture.height}"
+
+        if psnr is not None:
+            title += f"\nPSNR: {psnr:.2f} dB"
+
+        axis.set_title(title, color=BLUE if label == model_label else TEXT)
         axis.axis("off")
 
     fig.tight_layout()

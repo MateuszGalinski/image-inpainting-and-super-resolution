@@ -26,6 +26,8 @@ Checkpointy i historia pozostają w katalogu eksperymentu. Raporty trafiają do 
 
 Porównujemy pełne RGB bez wycinania brzegów. Strata MSE jest liczona przed ograniczeniem wartości, metryki MSE/PSNR/SSIM po ograniczeniu do [0, 1], a PSNR jest średnią po obrazach. Czas inferencji oznacza amortyzowany czas forward na obraz przy podanym batch size, po trzech rozgrzewkach, bez transferów i metryk; nie jest czasem całej obsługi pojedynczego zdjęcia.
 
+Notebooki 03–05 liczą metryki tą samą funkcją, na predykcji RGB po ograniczeniu do `[0, 1]` i przed konwersją do 8-bitowego PNG. W 05 metryki dotyczą rekonstrukcji po pomniejszeniu zdjęcia i porównaniu z referencją HR.
+
 Funkcje znajdują się w `src/restore_pipeline/super_resolution`: `data`, `models`, `training`, `checkpoints`, `evaluation`, `visualization` i `inference`. Pomocniczy `paths` formatuje ścieżki do komunikatów i metadanych. Nowa architektura wymaga osobnej klasy oraz przypadku w `build_model`; dotychczasowych wersji nie zmieniamy w sposób niezgodny z ich wagami.
 
 `espcn1_v1` to dotychczasowy model z dwiema konwolucjami i parametrem `hidden_channels`. `espcn3_v1` odtwarza układ warstw końcowego modelu z [publikacji ESPCN](https://openaccess.thecvf.com/content_cvpr_2016/html/Shi_Real-Time_Single_Image_CVPR_2016_paper.html): konwolucje 5×5, 3×3, 3×3, kanały 64 → 32 oraz tanh po dwóch pierwszych konwolucjach. Zachowujemy RGB i padding utrzymujący rozmiar, więc nie odtwarzamy całego protokołu eksperymentalnego autorów. W `MODELS` wybierz `{"name": "espcn3", "architecture": "espcn3_v1", "params": {}}`; liczby kanałów są stałe, a skala pochodzi ze wspólnego `TRAINING`.
