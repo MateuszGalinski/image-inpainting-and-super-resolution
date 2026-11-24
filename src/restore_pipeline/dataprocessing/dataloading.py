@@ -302,7 +302,7 @@ def get_damaged_splits_dataloaders(
     applies to every split, so validation matches the training distribution.
     """
     def build(ds: Dataset, transform: Callable, deterministic: bool, shuffle: bool) -> DataLoader:
-        images = ds.select_columns("image")
+        images = ds.select_columns(["image", "style"])
         damaged = images.with_transform(
             PairTransform(transform, damage_fn, damage=True, deterministic=deterministic)
         )

@@ -12,7 +12,7 @@ def random_ellipse_damage(
     generator: torch.Generator,
     max_area_frac: float = 1 / 16,
     fill: float = 0.0,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Paint one randomly sized, randomly placed ellipse onto a (C, H, W) image.
 
@@ -36,7 +36,10 @@ def random_ellipse_damage(
 
     damaged = image.clone()
     damaged[:, inside] = fill
-    return damaged
+
+    mask = inside.unsqueeze(0)
+
+    return damaged, mask
 
 
 def _random_generator() -> torch.Generator:
@@ -78,11 +81,16 @@ class PairTransform:
 
     def __call__(self, batch: dict) -> dict:
         clean = [self.base_transform(img) for img in batch["image"]]
+        style = [s if s is not None else "unknown" for s in batch["style"]]
+        mask = [torch.zeros_like(x[:1], dtype=torch.bool) for x in clean]
+        
         if not self.damage:
-            return {"image": clean, "target": clean}
+            return {"image": clean, "target": clean, "style": style, "mask": mask}
 
-        damaged = [
+        results = [
             self.damage_fn(x, _content_generator(x) if self.deterministic else _random_generator())
             for x in clean
         ]
-        return {"image": damaged, "target": clean}
+
+        damaged, masks = zip(*results)
+        return {"image": list(damaged), "target": clean, "style": style, "mask": list(masks)}
