@@ -81,7 +81,7 @@ class PairTransform:
 
     def __call__(self, batch: dict) -> dict:
         clean = [self.base_transform(img) for img in batch["image"]]
-        style = [s if s is not None else "unknown" for s in batch["style"]]
+        style = ["unknown" if s is None or s == "none" else s for s in batch["style"]]
         mask = [torch.zeros_like(x[:1], dtype=torch.bool) for x in clean]
         
         if not self.damage:

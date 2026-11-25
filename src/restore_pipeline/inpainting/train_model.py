@@ -38,6 +38,8 @@ def train_model(
     use_amp: bool = True,
     resume: bool = True,
     checkpoint_every: int = 100,
+    conditioning: str | None = None,
+    label_to_id: dict | None = None,
 ) -> dict[str, list[float]]:
 
     if checkpoint_every < 1:
@@ -55,6 +57,12 @@ def train_model(
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
+    if conditioning is not None and conditioning not in ("style", "cluster"):
+        raise ValueError("conditioning must be None, 'style', or 'cluster'")
+
+    if conditioning is None and label_to_id is not None:
+        raise ValueError("label_to_id requires conditioning")
+
     state = {
         "epoch": 1,
         "phase": "train",
@@ -68,12 +76,61 @@ def train_model(
         "best_epoch": None,
     }
 
+    # --------------------------------------------------
+    # Conditional forward pass
+    # --------------------------------------------------
+
+    def predict(batch, damaged):
+        if conditioning is None:
+            return model(damaged)
+
+        labels = batch[conditioning]
+
+        if label_to_id is not None:
+            ids = []
+
+            for label in labels:
+                if isinstance(label, Tensor):
+                    label = label.item()
+
+                if label is None:
+                    label = "unknown"
+
+                if label not in label_to_id:
+                    raise ValueError(
+                        f"Unknown {conditioning} label: {label!r}"
+                    )
+
+                ids.append(label_to_id[label])
+
+            condition_ids = torch.tensor(
+                ids,
+                dtype=torch.long,
+                device=device,
+            )
+
+        else:
+            # Already encoded integer IDs
+            condition_ids = torch.as_tensor(
+                labels,
+                dtype=torch.long,
+                device=device,
+            )
+
+        if condition_ids.ndim != 1 or len(condition_ids) != len(damaged):
+            raise ValueError("Expected one condition ID per image.")
+
+        return model(damaged, condition_ids)
+
+    # --------------------------------------------------
+    # Checkpoint helpers
+    # --------------------------------------------------
+
     def atomic_save(obj, path):
         tmp = path.with_name(path.name + ".tmp")
         torch.save(obj, tmp)
         os.replace(tmp, path)
 
-    # Save everything needed to resume training
     def save_recovery():
         atomic_save(
             {
@@ -81,6 +138,8 @@ def train_model(
                 "optimizer": opt.state_dict(),
                 "scaler": scaler.state_dict(),
                 "state": state,
+                "conditioning": conditioning,
+                "label_to_id": label_to_id,
                 "torch_rng": torch.get_rng_state(),
                 "cuda_rng": (
                     torch.cuda.get_rng_state_all()
@@ -88,22 +147,24 @@ def train_model(
                     else None
                 ),
                 "python_rng": random.getstate(),
-                "loader_rng": (
-                    train_dl.generator.get_state()
-                    if train_dl.generator is not None
-                    else None
-                ),
             },
             resume_path,
         )
 
-    # Restore previous session
     if resume and resume_path.exists():
         ckpt = torch.load(
             resume_path,
-            map_location=device,
+            map_location="cpu",
             weights_only=False,
         )
+
+        if (
+            ckpt.get("conditioning") != conditioning
+            or ckpt.get("label_to_id") != label_to_id
+        ):
+            raise ValueError(
+                "Checkpoint conditioning configuration does not match."
+            )
 
         model.load_state_dict(ckpt["model"])
         opt.load_state_dict(ckpt["optimizer"])
@@ -118,9 +179,6 @@ def train_model(
 
         random.setstate(ckpt["python_rng"])
 
-        if train_dl.generator is not None and ckpt["loader_rng"] is not None:
-            train_dl.generator.set_state(ckpt["loader_rng"].cpu())
-
         print(
             f"Resumed: epoch {state['epoch']}, "
             f"phase={state['phase']}, "
@@ -130,13 +188,16 @@ def train_model(
 
     print(f"Device: {device}")
     print(f"Mixed precision: {amp_enabled}")
+    print(f"Conditioning: {conditioning}")
     print(f"Training batches: {len(train_dl)}")
     print(f"Validation batches: {len(val_dl)}")
     print(f"Epochs: {epochs}")
-    print(f"Checkpoint interval: {checkpoint_every} batches")
-    print(f"Recovery checkpoint: {resume_path}\n", flush=True)
+    print(f"Checkpoint interval: {checkpoint_every}\n", flush=True)
 
-    # Build a loader for the remaining batches of an epoch
+    # --------------------------------------------------
+    # Remaining batches for checkpoint resume
+    # --------------------------------------------------
+
     def remaining_loader(batches):
         kwargs = {
             "dataset": train_dl.dataset,
@@ -146,7 +207,6 @@ def train_model(
             "pin_memory": train_dl.pin_memory,
             "worker_init_fn": train_dl.worker_init_fn,
             "timeout": train_dl.timeout,
-            "generator": train_dl.generator,
         }
 
         if train_dl.num_workers > 0:
@@ -155,7 +215,10 @@ def train_model(
 
         return DataLoader(**kwargs)
 
-    # Validation and testing use MASKED L1 ONLY
+    # --------------------------------------------------
+    # Validation / testing: masked L1 only
+    # --------------------------------------------------
+
     def masked_evaluate(loader, desc):
         model.eval()
 
@@ -164,43 +227,37 @@ def train_model(
 
         with torch.inference_mode():
             for batch in tqdm(loader, desc=desc):
-                damaged = batch["image"].to(
-                    device, non_blocking=True
-                )
-                clean = batch["target"].to(
-                    device, non_blocking=True
-                )
-                mask = batch["mask"].to(
-                    device, non_blocking=True
-                )
+                damaged = batch["image"].to(device, non_blocking=True)
+                clean = batch["target"].to(device, non_blocking=True)
+                mask = batch["mask"].to(device, non_blocking=True)
 
                 with torch.autocast(
                     device_type=device.type,
                     enabled=amp_enabled,
                 ):
-                    restored = model(damaged)
+                    restored = predict(batch, damaged)
 
-                    hole_l1, _, has_hole = _region_errors(
-                        restored, clean, mask
-                    )
+                hole_l1, _, has_hole = _region_errors(
+                    restored, clean, mask
+                )
 
                 total_error += hole_l1.sum()
                 total_images += has_hole.sum()
 
         if total_images.item() == 0:
-            raise RuntimeError(
-                "Validation/test data contain no damaged pixels."
-            )
+            raise RuntimeError("No damaged pixels found.")
 
         return (total_error / total_images).item()
 
+    # --------------------------------------------------
     # Training
+    # --------------------------------------------------
+
     for epoch in range(state["epoch"], epochs + 1):
         start = perf_counter()
 
         if state["phase"] == "train":
 
-            # Generate batch order once per epoch
             if state["batches"] is None:
                 state["batches"] = list(train_dl.batch_sampler)
                 state["next_batch"] = 0
@@ -244,9 +301,9 @@ def train_model(
                         device_type=device.type,
                         enabled=amp_enabled,
                     ):
-                        restored = model(damaged)
+                        restored = predict(batch, damaged)
 
-                        # HYBRID loss for training
+                        # Hybrid training loss
                         loss = criterion(restored, clean, mask)
 
                     if amp_enabled:
@@ -265,7 +322,6 @@ def train_model(
 
                     progress.update(1)
 
-                    # Periodic recovery checkpoint
                     if state["next_batch"] % checkpoint_every == 0:
                         state["loss_sum"] = running_loss.item()
                         save_recovery()
@@ -277,10 +333,9 @@ def train_model(
             state["phase"] = "val"
             state["loss_sum"] = running_loss.item()
 
-            # Save completed training epoch
             save_recovery()
 
-        # MASKED L1 for validation
+        # Validation uses masked L1
         val_loss = masked_evaluate(
             val_dl,
             f"Epoch {epoch}/{epochs} [Val masked L1]",
@@ -289,7 +344,6 @@ def train_model(
         state["history"]["train"].append(state["train_loss"])
         state["history"]["val"].append(val_loss)
 
-        # Select best weights using MASKED validation L1
         improved = val_loss < state["best_val_loss"]
 
         if improved:
@@ -309,7 +363,6 @@ def train_model(
             flush=True,
         )
 
-        # Prepare checkpoint for the next epoch
         state.update(
             epoch=epoch + 1,
             phase="train",
@@ -322,9 +375,9 @@ def train_model(
 
         save_recovery()
 
-    # Load best model for testing
-    if not save_path.exists():
-        raise RuntimeError("No best checkpoint was saved.")
+    # --------------------------------------------------
+    # Final evaluation
+    # --------------------------------------------------
 
     model.load_state_dict(
         torch.load(
@@ -339,11 +392,7 @@ def train_model(
         f"Best masked val L1: {state['best_val_loss']:.4f}"
     )
 
-    # Final evaluation uses MASKED L1
-    test_loss = masked_evaluate(
-        test_dl,
-        "Test masked L1",
-    )
+    test_loss = masked_evaluate(test_dl, "Test masked L1")
 
     print(f"Test masked L1: {test_loss:.4f}")
 
