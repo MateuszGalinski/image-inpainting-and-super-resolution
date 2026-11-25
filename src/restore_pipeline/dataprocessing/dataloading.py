@@ -29,6 +29,14 @@ from .preprocessing import preprocess_pipeline, remove_redundant_columns
 # TRANSFORMS
 #
 
+IMG_SIZE = 128
+
+RESIZE_128 = v2.Compose([
+    v2.ToImage(),
+    v2.Resize((IMG_SIZE, IMG_SIZE), antialias=True),
+    v2.ToDtype(torch.float32, scale=True),
+])
+
 BASIC_TRANSFORM = v2.Compose([
     v2.ToImage(),
     v2.ToDtype(dtype=torch.float32, scale=True),  # uint8 [0, 255] -> float32 [0, 1]
