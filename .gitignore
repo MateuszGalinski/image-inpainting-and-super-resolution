@@ -224,3 +224,5 @@ __marimo__/
 data
 models_weights
 checkpoints
+features
+*.stackdump
