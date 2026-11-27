@@ -2,6 +2,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+import torchvision
 from restore_pipeline.representation.utils import to_sobel
 
 @torch.inference_mode()
@@ -208,10 +209,53 @@ class DeepConvOnlyAutoencoder(RepresentationModel):
         return x
 
 
+def conv_bn_relu(c_in: int, c_out: int) -> list[nn.Module]:
+    return [nn.Conv2d(c_in, c_out, 3, padding=1, bias=False), nn.BatchNorm2d(c_out), nn.ReLU(inplace=True)]
+
+
+def make_encoder(name: str) -> tuple[nn.Module, int]:
+    """Backbone without a classification layer -> (encoder, output dim)."""
+    if name == "resnet18":
+        net = torchvision.models.resnet18(weights=None)
+        net.fc = nn.Identity()  # type: ignore[assignment]
+        return net, 512
+    if name == "small_cnn":
+        return nn.Sequential(
+            *conv_bn_relu(3, 64), nn.MaxPool2d(2),
+            *conv_bn_relu(64, 128), nn.MaxPool2d(2),
+            *conv_bn_relu(128, 256), *conv_bn_relu(256, 256), nn.MaxPool2d(2),
+            *conv_bn_relu(256, 512), *conv_bn_relu(512, 512), nn.MaxPool2d(2),
+            nn.AdaptiveAvgPool2d(1), nn.Flatten(),
+        ), 512
+    raise ValueError(f"unknown backbone: {name}")
+
+
+class SimCLR(RepresentationModel):
+    """
+    SimCLR (Chen et al., 2020): encoder -> `h` (the representation), projection head -> `z` (used only by the loss).
+    """
+
+    def __init__(self, backbone: str = "resnet18", proj_dim: int = 128) -> None:
+        super().__init__(backbone=backbone, proj_dim=proj_dim)
+        self.encoder, feat_dim = make_encoder(backbone)
+        self.projector = nn.Sequential(
+            nn.Linear(feat_dim, feat_dim, bias=False), nn.BatchNorm1d(feat_dim), nn.ReLU(inplace=True),
+            nn.Linear(feat_dim, proj_dim),
+        )
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        return self.encoder(x)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        h = self.encoder(x)
+        return h, self.projector(h)
+
+
 # Class name -> class. Checkpoints store the name; load_checkpoint looks it up here.
 # Register every new model, one entry per class (sizes/layers go in init kwargs).
 MODEL_REGISTRY: dict[str, type[RepresentationModel]] = {
     "ConvAutoencoder": ConvAutoencoder,
     "ConvOnlyAutoencoder": ConvOnlyAutoencoder,
     "DeepConvOnlyAutoencoder": DeepConvOnlyAutoencoder,
+    "SimCLR": SimCLR,
 }

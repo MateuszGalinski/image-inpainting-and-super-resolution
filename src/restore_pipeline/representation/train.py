@@ -73,6 +73,21 @@ def damaged_reconstruction_loss(model: nn.Module, batch: dict) -> torch.Tensor:
     return F.mse_loss(model(x), y)
 
 
+def nt_xent(z: torch.Tensor, temperature: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    SimCLR's NT-Xent loss. Takes projections, not (model, batch), so it is not a LossFn.
+
+    z: (2B, d), rows i and i + B are the two views of painting i.
+    Returns the loss and the share of views whose most similar other view is their partner.
+    """
+    z = F.normalize(z.float(), dim=1)
+    sim = z @ z.T / temperature
+    sim = sim.masked_fill(torch.eye(len(z), dtype=torch.bool, device=z.device), float("-inf"))   # not itself
+    b = len(z) // 2
+    partner = torch.cat([torch.arange(b, 2 * b), torch.arange(b)]).to(z.device)
+    return F.cross_entropy(sim, partner), (sim.argmax(dim=1) == partner).float().mean()
+
+
 #
 # STEPS
 #
